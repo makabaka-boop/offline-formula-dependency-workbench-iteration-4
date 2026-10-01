@@ -549,3 +549,125 @@ tr.hyp-row-divzero {
   background: #fffafa;
 }
 
+
+/* ------------------------------ 矩形复制面板 ------------------------------ */
+
+.copy-panel {
+  max-height: 52vh;
+}
+
+.copy-input-table label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.copy-size-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.copy-size-input {
+  width: 56px !important;
+}
+
+.copy-rect-wrap {
+  overflow: auto;
+  margin: 4px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  display: inline-block;
+  max-width: 100%;
+}
+table.copy-rect {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.copy-rect th {
+  background: #f8fafc;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.copy-rect .copy-corner {
+  text-align: right;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: var(--accent);
+}
+.copy-rowhead {
+  background: #f8fafc;
+  color: var(--muted);
+  text-align: right;
+  padding: 2px 8px;
+  border-right: 1px solid var(--border);
+  font-weight: 600;
+}
+.copy-cell {
+  border: 1px solid #eef0f3;
+  padding: 3px 7px;
+  min-width: 92px;
+  vertical-align: top;
+  cursor: pointer;
+}
+.copy-cell:hover {
+  background: #f5f8ff;
+}
+.copy-cell-addr {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-weight: 700;
+  font-size: 10px;
+  color: var(--muted);
+}
+.copy-cell-raw {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.copy-cell-out {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+.copy-cell-source {
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 2px var(--accent-soft);
+}
+.copy-cell-changed {
+  box-shadow: inset 0 0 0 2px #fde68a;
+}
+.copy-cell-source.copy-cell-changed {
+  box-shadow: inset 0 0 0 2px var(--accent-soft), inset 0 0 0 4px #fde68a;
+}
+.copy-cell-err.copy-cell-parse,
+.copy-cell-err.copy-cell-divzero {
+  background: #fff5f5;
+}
+.copy-cell-err.copy-cell-cycle {
+  background: var(--cycle-bg);
+}
+.copy-legend {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.copy-tag {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.copy-cell-source-tag {
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+  color: var(--accent);
+}
+.copy-cell-changed-tag {
+  background: #fffbeb;
+  box-shadow: inset 0 0 0 1px #fde68a;
+}
+.copy-diff-title {
+  font-size: 12px;
+  margin: 6px 0 4px;
+}

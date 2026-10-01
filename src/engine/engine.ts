@@ -1,4 +1,4 @@
-import { inBounds, normalizeRef, type Addr } from './cells';
+import { inBounds, normalizeRef, parseAddr, type Addr } from './cells';
 import { Fraction, ZeroDivision } from './fraction';
 import {
   collectRefs,
@@ -8,6 +8,13 @@ import {
   type ParsedCell,
 } from './parser';
 import { affectedSet, cyclePathsForScc, tarjan, topoOrder } from './graph';
+import {
+  normalizeCopyRequest,
+  rectAddrs,
+  translateCellRaw,
+  type CopyRequest,
+  type TranslateFailure,
+} from './fill';
 
 /* ------------------------------- 错误类型 ------------------------------- */
 
@@ -350,6 +357,42 @@ export interface CommitResult {
   stale?: boolean;
 }
 
+/* --------------------------- 矩形复制（至多 5×5） --------------------------- */
+
+/** 一个目标格的写入计划（全部由冻结的源快照一次性算出） */
+export interface CellCopyPlan {
+  /** 目标格地址 */
+  target: Addr;
+  /** 平移后（或原文复制）的原始输入；'' 表示清空该格 */
+  raw: string;
+  /** 该格是否即源格自身（零偏移，公式保持原样） */
+  isSource: boolean;
+  /** 目标格内是否原样复制了 #ERR! 源格 */
+  copiedErrorText: boolean;
+}
+
+export interface CopyPreview {
+  ok: boolean;
+  /** 整组拒绝原因（地址 / 矩形越界或超 5×5 / 平移后引用越界） */
+  errors?: string[];
+  /** 越界引用明细（errors 的结构化版本，供测试与 UI 使用） */
+  outOfBounds?: { target: Addr; failures: TranslateFailure[] }[];
+  /** 预演所依据的正式网格修订号 */
+  baseRevision: number;
+  source: Addr;
+  topLeft: Addr;
+  width: number;
+  height: number;
+  /** 与目标矩形同形的写入计划，先行后列 */
+  plans: CellCopyPlan[];
+  /** 精确值、错误类型或来源路径发生变化的格，按地址排序 */
+  changes: CellChange[];
+  /** 复制后的完整结果（最终候选依赖图上整体求值，绝不提前写入） */
+  states: Map<Addr, CellState>;
+  /** 复制后的原始输入 */
+  raw: Map<Addr, string>;
+}
+
 /* -------------------------------- 引擎 -------------------------------- */
 
 export class SheetEngine {
@@ -486,6 +529,135 @@ export class SheetEngine {
    * 只有正式网格仍是预演所依据的修订版本才采纳；否则提示过期并保留正式数据。
    */
   commitHypothesis(preview: HypothesisPreview): CommitResult {
+    if (!preview.ok) return { ok: false, stale: false };
+    if (this.revision !== preview.baseRevision) {
+      return { ok: false, stale: true };
+    }
+    this.raw = new Map(preview.raw);
+    this.states = new Map(preview.states);
+    this.revision++;
+    return { ok: true };
+  }
+
+  /* ------------------------------ 矩形复制 ------------------------------ */
+
+  /**
+   * 基于当前快照预演“单一源格 -> 至多 5×5 矩形”的复制。
+   *
+   * - 相对行列按源格到每个目标格的偏移平移；$ 锁定的一维固定不动。
+   * - 源、目标重叠时，先冻结完整源快照：源格原文只读一次，全部目标格的
+   *   写入计划都由这份快照一次性算出，绝不读取前面已生成（甚至写入）的目标格。
+   * - 任一目标格的平移引用越出 A..T / 1..20，整组拒绝：网格、修订号、导出不变。
+   * - 原本语法错误的源格按 #ERR! 语义把原文复制到每个目标格。
+   * - 结果在“最终候选依赖图”上整体求值一次（与假设预演同一套图/传播代码），
+   *   因此能展示新生或消失的环、除零与传播变化；本方法绝不修改正式网格。
+   */
+  previewCopy(req: CopyRequest): CopyPreview {
+    const rejected = (errors: string[], extra?: Partial<CopyPreview>): CopyPreview => ({
+      ok: false,
+      errors,
+      baseRevision: this.revision,
+      source: '',
+      topLeft: '',
+      width: 0,
+      height: 0,
+      plans: [],
+      changes: [],
+      states: this.states,
+      raw: this.raw,
+      ...extra,
+    });
+
+    const norm = normalizeCopyRequest(req);
+    if (!norm.ok) return rejected(norm.errors);
+
+    const { source, targetTopLeft, width, height } = norm;
+    const targets = rectAddrs(targetTopLeft, width, height);
+
+    // 冻结完整源快照：平移所需的源格原文此刻固定，后续不随任何目标格变化
+    const sourceRaw = this.raw.get(source) ?? '';
+    let sourceHadParseError = false;
+    if (sourceRaw.trim().startsWith('=')) {
+      try {
+        parseCellInput(sourceRaw);
+      } catch {
+        sourceHadParseError = true;
+      }
+    }
+
+    const src = parseAddr(source)!;
+    const plans: CellCopyPlan[] = [];
+    const outOfBounds: { target: Addr; failures: TranslateFailure[] }[] = [];
+    for (const target of targets) {
+      const tp = parseAddr(target)!;
+      const dCol = tp.col - src.col;
+      const dRow = tp.row - src.row;
+      // 源格自身（重叠时）偏移为 0，公式自然保持原样
+      const r = translateCellRaw(sourceRaw, dCol, dRow);
+      if ('failures' in r) {
+        outOfBounds.push({ target, failures: r.failures });
+        continue;
+      }
+      plans.push({
+        target,
+        raw: r.raw,
+        isSource: target === source,
+        copiedErrorText: sourceHadParseError && r.raw === sourceRaw,
+      });
+    }
+
+    if (outOfBounds.length > 0) {
+      const errors = outOfBounds.map(
+        (o) =>
+          `复制到 ${o.target} 后引用越界：${o.failures
+            .map((f) => `${f.ref}（${f.reason}）`)
+            .join('、')}。已整组拒绝，网格未改动`,
+      );
+      return rejected(errors, {
+        outOfBounds,
+        source,
+        topLeft: targetTopLeft,
+        width,
+        height,
+      });
+    }
+
+    // 全部计划同时施加到冻结快照的副本上，据此构造最终依赖图整体求值
+    const nextRaw = new Map(this.raw);
+    for (const p of plans) {
+      if (p.raw.trim() === '') nextRaw.delete(p.target);
+      else nextRaw.set(p.target, p.raw);
+    }
+    const nextStates = buildStates(nextRaw, null, new Map());
+
+    const keys = new Set<Addr>([...this.states.keys(), ...nextStates.keys()]);
+    const changes: CellChange[] = [];
+    for (const key of [...keys].sort()) {
+      const before = outcomeOf(key, this.states);
+      const after = outcomeOf(key, nextStates);
+      if (!sameOutcome(before, after)) changes.push({ key, before, after });
+    }
+
+    return {
+      ok: true,
+      baseRevision: this.revision,
+      source,
+      topLeft: targetTopLeft,
+      width,
+      height,
+      plans,
+      changes,
+      states: nextStates,
+      raw: nextRaw,
+    };
+  }
+
+  /**
+   * 用户确认时按预演一次性写入整个矩形。
+   * 只有正式网格仍是预演所依据的修订版本才写入（同一份预演只能成功写入一次）；
+   * 否则提示过期并保留正式数据。
+   */
+  commitCopy(preview: CopyPreview): CommitResult {
     if (!preview.ok) return { ok: false, stale: false };
     if (this.revision !== preview.baseRevision) {
       return { ok: false, stale: true };

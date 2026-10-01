@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAddr, keyOf, type Addr } from '../engine/cells';
-import { SheetEngine, type HypothesisPreview } from '../engine/engine';
+import { SheetEngine, type CopyPreview, type HypothesisPreview } from '../engine/engine';
+import type { CopyRequest } from '../engine/fill';
 import { exportSnapshot, validateImport } from '../engine/snapshot';
 import { Grid } from './Grid';
 import { Inspector } from './Inspector';
 import { HypothesisPanel } from './HypothesisPanel';
+import { CopyPanel } from './CopyPanel';
 
 const DEMO: Record<string, string> = {
   A1: '8',
@@ -37,6 +39,7 @@ export function App() {
   );
   const [importErrors, setImportErrors] = useState<string[] | null>(null);
   const [hypOpen, setHypOpen] = useState(false);
+  const [copyOpen, setCopyOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   /**
    * 用户操作序号：导入、单格编辑、载入演示、清空、采纳预演共享同一条先后顺序。
@@ -177,6 +180,7 @@ export function App() {
     engine.loadGrid(result.cells!);
     refresh();
     setHypOpen(false); // 导入新网格：预演工作区不沿用
+    setCopyOpen(false);
     select('A1');
   };
 
@@ -204,6 +208,21 @@ export function App() {
     return false;
   };
 
+  // 矩形复制：与假设修改同一条用户操作顺序；预览只读，确认才整组写入
+  const runCopyPreview = (req: CopyRequest): CopyPreview => engine.previewCopy(req);
+
+  const commitCopy = (p: CopyPreview): boolean => {
+    const r = engine.commitCopy(p);
+    if (r.ok) {
+      opSeq.current++;
+      refresh();
+      setBarDraft(engine.getRaw(selected));
+      return true;
+    }
+    refresh();
+    return false;
+  };
+
   return (
     <div className="app">
       <div className="toolbar">
@@ -216,10 +235,23 @@ export function App() {
         </button>
         <button
           className={`btn${hypOpen ? ' active' : ''}`}
-          onClick={() => setHypOpen((v) => !v)}
+          onClick={() => {
+            setHypOpen((v) => !v);
+            setCopyOpen(false);
+          }}
           title="同时预演 1～3 格修改对下游与错误来源的影响"
         >
           假设修改
+        </button>
+        <button
+          className={`btn${copyOpen ? ' active' : ''}`}
+          onClick={() => {
+            setCopyOpen((v) => !v);
+            setHypOpen(false);
+          }}
+          title="把已核对的一格复制到至多 5×5 矩形：相对引用平移，$ 锚定保持"
+        >
+          矩形复制
         </button>
         <button className="btn" onClick={() => fileRef.current?.click()}>
           导入 JSON
@@ -317,7 +349,7 @@ export function App() {
               e.preventDefault();
             }
           }}
-          placeholder="输入整数，或 = 开头的公式（仅支持 + - * /、括号、一元负号、A1..T20 引用）"
+          placeholder="输入整数，或 = 开头的公式（+ - * /、括号、一元负号、A1..T20 引用，支持 $A$1 锚定）"
         />
         <span className="hint">Enter 确认 · Esc 取消</span>
       </div>
@@ -329,6 +361,17 @@ export function App() {
           onPreview={runPreview}
           onCommit={commitPreview}
           onCancel={() => setHypOpen(false)}
+          onJump={(addr) => select(addr)}
+        />
+      )}
+
+      {copyOpen && (
+        <CopyPanel
+          revision={snap.revision}
+          initialAddr={selected}
+          onPreview={runCopyPreview}
+          onCommit={commitCopy}
+          onCancel={() => setCopyOpen(false)}
           onJump={(addr) => select(addr)}
         />
       )}

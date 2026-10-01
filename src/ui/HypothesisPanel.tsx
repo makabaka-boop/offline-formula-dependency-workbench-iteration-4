@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { normalizeRef, type Addr } from '../engine/cells';
-import type { CellOutcome, HypothesisPreview } from '../engine/engine';
+import type { HypothesisPreview } from '../engine/engine';
+import { ChangesTable } from './outcome';
 
 interface HypothesisPanelProps {
   revision: number;
@@ -16,45 +17,6 @@ interface HypothesisPanelProps {
 }
 
 const MAX_ENTRIES = 3;
-
-function errorCode(t: CellOutcome['error']): string {
-  switch (t!.type) {
-    case 'parse':
-      return '#ERR!';
-    case 'cycle':
-      return '#CYCLE!';
-    case 'divzero':
-      return '#DIV/0!';
-  }
-}
-
-function OutcomeView({ o }: { o: CellOutcome }) {
-  if (o.error) {
-    return (
-      <span className={`hyp-err hyp-err-${o.error.type}`} title={o.error.message}>
-        {errorCode(o.error)}
-      </span>
-    );
-  }
-  if (o.value) {
-    return <span className="hyp-num">{o.value.toDisplayString()}</span>;
-  }
-  return <span className="hyp-empty">（空）</span>;
-}
-
-function PathView({ o }: { o: CellOutcome }) {
-  if (!o.error) return null;
-  const seq = o.error.cycle ?? o.error.path;
-  if (seq.length <= 1) {
-    return <span className="hyp-path">来源 {o.error.source}</span>;
-  }
-  return (
-    <span className="hyp-path">
-      {o.error.type === 'cycle' ? '环：' : '来源路径：'}
-      {seq.join(' → ')}
-    </span>
-  );
-}
 
 export function HypothesisPanel({
   revision,
@@ -218,40 +180,7 @@ export function HypothesisPanel({
           {preview.changes.length === 0 ? (
             <div className="hyp-nochange">整组修改不会改变任何格的精确值、错误或来源路径。</div>
           ) : (
-            <table className="hyp-diff-table">
-              <thead>
-                <tr>
-                  <th>格</th>
-                  <th>修改前</th>
-                  <th>预演后</th>
-                  <th>错误来源 / 环路径</th>
-                </tr>
-              </thead>
-              <tbody>
-                {preview.changes.map((c) => {
-                  const a = c.after;
-                  return (
-                    <tr
-                      key={c.key}
-                      className={a.error ? `hyp-row-${a.error.type}` : ''}
-                      onClick={() => onJump(c.key)}
-                      title={`跳转到 ${c.key}`}
-                    >
-                      <td className="hyp-cell-key">{c.key}</td>
-                      <td className="hyp-cell-out">
-                        <OutcomeView o={c.before} />
-                      </td>
-                      <td className="hyp-cell-out">
-                        <OutcomeView o={a} />
-                      </td>
-                      <td className="hyp-cell-path">
-                        <PathView o={a} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <ChangesTable changes={preview.changes} onJump={onJump} />
           )}
         </div>
       )}

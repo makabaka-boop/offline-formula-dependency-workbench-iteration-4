@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectRefs, parseCellInput, parseExpr, ParseError } from './parser';
+import { collectRefs, parseCellInput, parseExpr, ParseError, refSpans } from './parser';
 
 describe('解析器：运算优先级', () => {
   it('乘除优先于加减', () => {
@@ -86,6 +86,39 @@ describe('解析器：引用与范围', () => {
     expect(() => parseExpr('A21')).toThrow(/A1..T20/);
     expect(() => parseExpr('A0')).toThrow();
     expect(() => parseExpr('AA1')).toThrow();
+  });
+});
+
+describe('解析器：$ 锚定引用', () => {
+  it('接受四种锚定写法，地址（不含 $）用于依赖求值', () => {
+    expect(collectRefs(parseExpr('A1+$A1+A$1+$A$1'))).toEqual(['A1']);
+    expect(collectRefs(parseExpr('$t20'))).toEqual(['T20']);
+  });
+
+  it('refSpans 给出每个引用的锚定与行列', () => {
+    const spans = refSpans('A1+$A1+A$1+$A$1');
+    expect(spans.map((s) => [s.addr, s.colAnchored, s.rowAnchored])).toEqual([
+      ['A1', false, false],
+      ['A1', true, false],
+      ['A1', false, true],
+      ['A1', true, true],
+    ]);
+    // 起止位置正确（含 $）
+    const mixed = refSpans('$B2+C$3');
+    expect(mixed[0]).toMatchObject({ addr: 'B2', start: 0, end: 3 });
+    expect(mixed[1]).toMatchObject({ addr: 'C3', start: 4, end: 7 });
+  });
+
+  it('单元格输入接受带锚定的公式', () => {
+    expect(parseCellInput('=$A$1*2').kind).toBe('formula');
+    expect(parseCellInput('=a$1+1').kind).toBe('formula');
+  });
+
+  it('拒绝非法 $ 位置与锚定越界', () => {
+    expect(() => parseExpr('$1')).toThrow(/\$/);
+    expect(() => parseExpr('A$')).toThrow();
+    expect(() => parseExpr('$U1')).toThrow(/A1\.\.T20/);
+    expect(() => parseExpr('$A$21')).toThrow(/A1\.\.T20/);
   });
 });
 
