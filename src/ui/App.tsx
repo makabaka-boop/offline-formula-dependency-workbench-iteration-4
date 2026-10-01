@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAddr, keyOf, type Addr } from '../engine/cells';
-import { SheetEngine, type HypothesisPreview } from '../engine/engine';
+import {
+  SheetEngine,
+  type CopyPreview,
+  type HypothesisPreview,
+} from '../engine/engine';
 import { exportSnapshot, validateImport } from '../engine/snapshot';
 import { Grid } from './Grid';
 import { Inspector } from './Inspector';
 import { HypothesisPanel } from './HypothesisPanel';
+import { CopyPanel } from './CopyPanel';
 
 const DEMO: Record<string, string> = {
   A1: '8',
@@ -15,6 +20,8 @@ const DEMO: Record<string, string> = {
   C2: '=(A1+A2)/3',
   D1: '=1/3',
   D2: '=D1+D1+D1',
+  // E 列演示锚定引用：锁列 $A、锁行 $1、全锁 $A$1，供矩形复制核对
+  E1: '=$A1+A$1+$A$1',
   // 制造一个环和一个除零，方便质检员核对标记：
   F1: '=F2+1',
   F2: '=F1-1',
@@ -37,6 +44,7 @@ export function App() {
   );
   const [importErrors, setImportErrors] = useState<string[] | null>(null);
   const [hypOpen, setHypOpen] = useState(false);
+  const [copyOpen, setCopyOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   /**
    * 用户操作序号：导入、单格编辑、载入演示、清空、采纳预演共享同一条先后顺序。
@@ -177,6 +185,7 @@ export function App() {
     engine.loadGrid(result.cells!);
     refresh();
     setHypOpen(false); // 导入新网格：预演工作区不沿用
+    setCopyOpen(false);
     select('A1');
   };
 
@@ -204,6 +213,27 @@ export function App() {
     return false;
   };
 
+  // 矩形复制：预演只基于当前快照读引擎，绝不写正式网格
+  const runCopyPreview = (req: {
+    sourceTopLeft: string;
+    targetTopLeft: string;
+    width: number;
+    height: number;
+  }): CopyPreview => engine.previewCopy(req);
+
+  const commitCopyPreview = (p: CopyPreview): boolean => {
+    const r = engine.commitCopy(p);
+    if (r.ok) {
+      opSeq.current++; // 复制写入改变正式网格：使仍在读取中的导入作废
+      refresh();
+      setBarDraft(engine.getRaw(selected));
+      return true;
+    }
+    // 过期：刷新状态让面板显示过期提示；过期预演不能覆盖后续编辑
+    refresh();
+    return false;
+  };
+
   return (
     <div className="app">
       <div className="toolbar">
@@ -220,6 +250,13 @@ export function App() {
           title="同时预演 1～3 格修改对下游与错误来源的影响"
         >
           假设修改
+        </button>
+        <button
+          className={`btn${copyOpen ? ' active' : ''}`}
+          onClick={() => setCopyOpen((v) => !v)}
+          title="把已核对矩形（至多 5×5）复制到相邻批次：相对引用移动、$ 锚定不动"
+        >
+          矩形复制
         </button>
         <button className="btn" onClick={() => fileRef.current?.click()}>
           导入 JSON
@@ -317,7 +354,7 @@ export function App() {
               e.preventDefault();
             }
           }}
-          placeholder="输入整数，或 = 开头的公式（仅支持 + - * /、括号、一元负号、A1..T20 引用）"
+          placeholder="输入整数，或 = 开头的公式（支持 + - * /、括号、一元负号、A1..T20 引用与 $A$1 / $A1 / A$1 锚定）"
         />
         <span className="hint">Enter 确认 · Esc 取消</span>
       </div>
@@ -329,6 +366,17 @@ export function App() {
           onPreview={runPreview}
           onCommit={commitPreview}
           onCancel={() => setHypOpen(false)}
+          onJump={(addr) => select(addr)}
+        />
+      )}
+
+      {copyOpen && (
+        <CopyPanel
+          revision={snap.revision}
+          initialAddr={selected}
+          onPreview={runCopyPreview}
+          onCommit={commitCopyPreview}
+          onCancel={() => setCopyOpen(false)}
           onJump={(addr) => select(addr)}
         />
       )}

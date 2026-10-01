@@ -1,9 +1,10 @@
-import { inBounds, normalizeRef, type Addr } from './cells';
+import { inBounds, normalizeRef, parseAddr, keyOf, type Addr } from './cells';
 import { Fraction, ZeroDivision } from './fraction';
 import {
   collectRefs,
   parseCellInput,
   ParseError,
+  translateCellInput,
   type Expr,
   type ParsedCell,
 } from './parser';
@@ -298,36 +299,20 @@ export interface CellChange {
   after: CellOutcome;
 }
 
-export interface HypothesisPreview {
-  ok: boolean;
-  /** 候选非法（地址重复 / 越界 / 数量不符）时整组拒绝的原因 */
-  errors?: string[];
-  /** 预演所依据的正式网格修订号 */
-  baseRevision: number;
-  /** 规范化后的候选（拒绝时为空） */
-  candidates: HypothesisEntry[];
-  /** 仅含精确值 / 错误类型 / 来源路径发生变化的格，按地址排序 */
-  changes: CellChange[];
-  /** 预演后的完整结果（仅预演使用，绝不写入正式网格） */
-  states: Map<Addr, CellState>;
-  /** 预演后的原始输入 */
-  raw: Map<Addr, string>;
-}
-
-function outcomeOf(key: Addr, states: Map<Addr, CellState>): CellOutcome {
+export function outcomeOf(key: Addr, states: Map<Addr, CellState>): CellOutcome {
   const st = states.get(key);
   if (!st) return { key, kind: null, value: null, error: null };
   return { key, kind: st.kind, value: st.value, error: st.error };
 }
 
-function sameAddrPath(a: Addr[] | undefined, b: Addr[] | undefined): boolean {
+export function sameAddrPath(a: Addr[] | undefined, b: Addr[] | undefined): boolean {
   if (!a || !b) return (a?.length ?? 0) === (b?.length ?? 0);
   if (a.length !== b.length) return false;
   return a.every((v, i) => v === b[i]);
 }
 
 /** 比较两结果：只看精确值、错误类型与来源路径（与预演输出口径一致） */
-function sameOutcome(a: CellOutcome, b: CellOutcome): boolean {
+export function sameOutcome(a: CellOutcome, b: CellOutcome): boolean {
   if (a.error || b.error) {
     if (!a.error || !b.error) return false;
     return (
@@ -344,10 +329,90 @@ function sameOutcome(a: CellOutcome, b: CellOutcome): boolean {
   return true;
 }
 
+export interface HypothesisPreview {
+  ok: boolean;
+  /** 候选非法（地址重复 / 越界 / 数量不符）时整组拒绝的原因 */
+  errors?: string[];
+  /** 预演所依据的正式网格修订号 */
+  baseRevision: number;
+  /** 规范化后的候选（拒绝时为空） */
+  candidates: HypothesisEntry[];
+  /** 仅含精确值 / 错误类型 / 来源路径发生变化的格，按地址排序 */
+  changes: CellChange[];
+  /** 预演后的完整结果（仅预演使用，绝不写入正式网格） */
+  states: Map<Addr, CellState>;
+  /** 预演后的原始输入 */
+  raw: Map<Addr, string>;
+}
+
+/** 对比两份完整结果，只列出精确值 / 错误类型 / 来源路径发生变化的格（按地址排序） */
+function diffStates(
+  before: Map<Addr, CellState>,
+  after: Map<Addr, CellState>,
+): CellChange[] {
+  const keys = new Set<Addr>([...before.keys(), ...after.keys()]);
+  const changes: CellChange[] = [];
+  for (const key of [...keys].sort()) {
+    const b = outcomeOf(key, before);
+    const a = outcomeOf(key, after);
+    if (!sameOutcome(b, a)) changes.push({ key, before: b, after: a });
+  }
+  return changes;
+}
+
 export interface CommitResult {
   ok: boolean;
   /** 正式网格已不是预演所依据的修订版本 */
   stale?: boolean;
+}
+
+/* ----------------------------- 矩形复制类型 ----------------------------- */
+
+/** 复制预览最多支持的矩形边长（5×5） */
+export const COPY_MAX = 5;
+
+export interface CopyRequest {
+  /** 源矩形左上角地址（A1..T20，大小写不敏感） */
+  sourceTopLeft: string;
+  /** 目标矩形左上角地址 */
+  targetTopLeft: string;
+  /** 矩形宽（列数），1～5 */
+  width: number;
+  /** 矩形高（行数），1～5 */
+  height: number;
+}
+
+/** 一格复制计划：源格 → 目标格及其转换后的原文 */
+export interface CopiedCell {
+  source: Addr;
+  target: Addr;
+  sourceRaw: string;
+  targetRaw: string;
+  /** 源格原本语法错误：原文照搬，目标格同样为 #ERR! */
+  parseError: boolean;
+}
+
+export interface CopyPreview {
+  ok: boolean;
+  /** 几何非法 / 转换后越界等整组拒绝原因 */
+  errors?: string[];
+  /** 预演所依据的正式网格修订号 */
+  baseRevision: number;
+  width: number;
+  height: number;
+  /** 逐格复制计划（按行优先、与 5×5 预览同序）；拒绝时为空 */
+  cells: CopiedCell[];
+  /** 最终候选依赖图上精确值 / 错误 / 来源路径发生变化的格 */
+  changes: CellChange[];
+  /** 复制后的完整结果（仅预演使用，绝不写入正式网格） */
+  states: Map<Addr, CellState>;
+  /** 复制后的原始输入 */
+  raw: Map<Addr, string>;
+}
+
+function parseReqAddr(text: string): { col: number; row: number } | null {
+  const norm = normalizeRef(text);
+  return norm ? parseAddr(norm) : null;
 }
 
 /* -------------------------------- 引擎 -------------------------------- */
@@ -463,13 +528,7 @@ export class SheetEngine {
     const nextStates = buildStates(nextRaw, null, new Map());
 
     // 只列出精确值、错误类型或来源路径发生变化的格
-    const keys = new Set<Addr>([...this.states.keys(), ...nextStates.keys()]);
-    const changes: CellChange[] = [];
-    for (const key of [...keys].sort()) {
-      const before = outcomeOf(key, this.states);
-      const after = outcomeOf(key, nextStates);
-      if (!sameOutcome(before, after)) changes.push({ key, before, after });
-    }
+    const changes = diffStates(this.states, nextStates);
 
     return {
       ok: true,
@@ -486,6 +545,161 @@ export class SheetEngine {
    * 只有正式网格仍是预演所依据的修订版本才采纳；否则提示过期并保留正式数据。
    */
   commitHypothesis(preview: HypothesisPreview): CommitResult {
+    if (!preview.ok) return { ok: false, stale: false };
+    if (this.revision !== preview.baseRevision) {
+      return { ok: false, stale: true };
+    }
+    this.raw = new Map(preview.raw);
+    this.states = new Map(preview.states);
+    this.revision++;
+    return { ok: true };
+  }
+
+  /* ------------------------------ 矩形复制 ------------------------------ */
+
+  /**
+   * 把已核对的源矩形复制到以 targetTopLeft 为左上角的同尺寸矩形，
+   * 预演最终候选依赖图（绝不写入正式网格）。
+   *
+   * - 源、目标最多 5×5；相对引用按“源格 → 目标格”的整组统一偏移平移，
+   *   $ 锚定的列 / 行保持不动；源、目标重叠时先冻结完整源快照再逐格转换，
+   *   绝不会读到前面已写入的目标格。
+   * - 任一转换后引用越出 A..T / 1..20：整组拒绝，网格、修订号不变。
+   * - 原本语法错误的源格（#ERR!）按现有语义复制原文，目标格同样为 #ERR!。
+   */
+  previewCopy(req: CopyRequest): CopyPreview {
+    const rejected = (errors: string[]): CopyPreview => ({
+      ok: false,
+      errors,
+      baseRevision: this.revision,
+      width: 0,
+      height: 0,
+      cells: [],
+      changes: [],
+      states: this.states,
+      raw: this.raw,
+    });
+
+    const errors: string[] = [];
+    if (
+      typeof req.width !== 'number' ||
+      typeof req.height !== 'number' ||
+      !Number.isInteger(req.width) ||
+      !Number.isInteger(req.height) ||
+      req.width < 1 ||
+      req.height < 1 ||
+      req.width > COPY_MAX ||
+      req.height > COPY_MAX
+    ) {
+      errors.push(`复制矩形的宽、高必须是 1～${COPY_MAX} 的整数（至多 ${COPY_MAX}×${COPY_MAX} 格）`);
+    }
+    const width = typeof req.width === 'number' ? req.width : 0;
+    const height = typeof req.height === 'number' ? req.height : 0;
+    const origin = parseReqAddr(req.sourceTopLeft);
+    const target = parseReqAddr(req.targetTopLeft);
+    if (!origin) errors.push(`源起始格 ${String(req.sourceTopLeft)} 超出 A1..T20`);
+    if (!target) errors.push(`目标起始格 ${String(req.targetTopLeft)} 超出 A1..T20`);
+    if (
+      errors.length > 0 ||
+      !origin ||
+      !target ||
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      width < 1 ||
+      height < 1
+    ) {
+      return rejected(errors);
+    }
+
+    // 源矩形与目标矩形都必须完整落在网格内
+    if (origin.col + width > 20 || origin.row + height > 20) {
+      errors.push(`源矩形 ${width}×${height} 超出网格右 / 下边界（A..T，1..20）`);
+    }
+    if (target.col + width > 20 || target.row + height > 20) {
+      errors.push(`目标矩形 ${width}×${height} 超出网格右 / 下边界（A..T，1..20）`);
+    }
+    if (errors.length > 0) return rejected(errors);
+
+    const dc = target.col - origin.col;
+    const dr = target.row - origin.row;
+
+    // 冻结完整源快照：重叠复制时转换只能依据此刻的原始输入，
+    // 先收集齐再统一施加，杜绝“被前面已写入目标格污染”。
+    const sourceSnapshot = new Map(this.raw);
+
+    const cells: CopiedCell[] = [];
+    const nextRaw = new Map(this.raw);
+
+    for (let r = 0; r < height; r++) {
+      for (let c = 0; c < width; c++) {
+        const srcAddr = keyOf(origin.col + c, origin.row + r)!;
+        const dstAddr = keyOf(target.col + c, target.row + r)!;
+        const sourceRaw = sourceSnapshot.get(srcAddr) ?? '';
+
+        // 源格原本语法错误：按 #ERR! 语义复制原文（不做引用转换）
+        let parseFailed = false;
+        try {
+          parseCellInput(sourceRaw);
+        } catch {
+          parseFailed = true;
+        }
+
+        let destRaw: string;
+        if (parseFailed) {
+          destRaw = sourceRaw;
+        } else if (sourceRaw.trim() === '') {
+          destRaw = '';
+        } else {
+          const tr = translateCellInput(sourceRaw, dc, dr);
+          if (!tr.ok) {
+            errors.push(
+              `${srcAddr} → ${dstAddr}：引用 ${tr.outOfRange
+                .map((x) => x.toUpperCase())
+                .join('、')} 转换后超出 A..T、1..20`,
+            );
+            continue;
+          }
+          destRaw = tr.text;
+        }
+
+        cells.push({
+          source: srcAddr,
+          target: dstAddr,
+          sourceRaw,
+          targetRaw: destRaw,
+          parseError: parseFailed,
+        });
+        if (destRaw.trim() === '') nextRaw.delete(dstAddr);
+        else nextRaw.set(dstAddr, destRaw);
+      }
+    }
+
+    if (errors.length > 0) {
+      // 整组拒绝：不构造候选图，网格 / 修订号 / 导出均不变
+      return rejected(errors);
+    }
+
+    // 在最终候选依赖图上整体求值一次（Tarjan 环检测、拓扑序、错误传播同正式网格）
+    const nextStates = buildStates(nextRaw, null, new Map());
+    const changes = diffStates(this.states, nextStates);
+
+    return {
+      ok: true,
+      baseRevision: this.revision,
+      width,
+      height,
+      cells,
+      changes,
+      states: nextStates,
+      raw: nextRaw,
+    };
+  }
+
+  /**
+   * 确认复制：只有正式网格仍是预演所依据的修订版本才一次性写入；
+   * 过期（期间发生编辑 / 导入 / 清空 / 采纳其他预演）则整组拒绝写入。
+   */
+  commitCopy(preview: CopyPreview): CommitResult {
     if (!preview.ok) return { ok: false, stale: false };
     if (this.revision !== preview.baseRevision) {
       return { ok: false, stale: true };

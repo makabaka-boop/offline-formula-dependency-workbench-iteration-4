@@ -4,7 +4,7 @@ import { normalizeRef, type Addr } from './cells';
 
 export type Expr =
   | { kind: 'int'; value: bigint }
-  | { kind: 'ref'; addr: Addr }
+  | { kind: 'ref'; addr: Addr; absCol: boolean; absRow: boolean }
   | { kind: 'unary'; op: '-'; operand: Expr }
   | { kind: 'binary'; op: '+' | '-' | '*' | '/'; left: Expr; right: Expr };
 
@@ -15,6 +15,9 @@ interface Token {
   type: TokenType;
   text: string;
   pos: number;
+  /** 引用的锚定方式（仅 ref） */
+  absCol?: boolean;
+  absRow?: boolean;
 }
 
 /* ------------------------------ 错误 ------------------------------ */
@@ -46,21 +49,63 @@ function tokenize(input: string): Token[] {
       tokens.push({ type: 'int', text: input.slice(start, i), pos: start });
       continue;
     }
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+    // 引用：可选 “$” 列锚 + 列字母 + 可选 “$” 行锚 + 行号（$A1 / A$1 / $A$1 / A1）
+    if (c === '$' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
       const start = i;
-      i++;
+      let absCol = false;
+      if (input[i] === '$') {
+        absCol = true;
+        i++;
+      }
+      const letter = input[i];
+      if (!letter || !/[A-Ta-t]/.test(letter)) {
+        if (absCol) {
+          throw new ParseError(
+            '“$” 是列锚标记，其后必须紧跟 A..T 的列字母（如 $A1）',
+            start,
+          );
+        }
+        // 列字母越界（如 U1）：落入下面的统一标识符扫描，给出与旧词法一致的错误
+        i++;
+      } else {
+        i++;
+      }
+      let absRow = false;
+      if (input[i] === '$') {
+        absRow = true;
+        i++;
+      }
+      const digitsStart = i;
       while (i < input.length && input[i] >= '0' && input[i] <= '9') i++;
-      const text = input.slice(start, i);
-      const addr = normalizeRef(text);
-      if (!addr) {
+      const digits = input.slice(digitsStart, i);
+      const text = letter + digits;
+      if (digits === '' || !normalizeRef(text)) {
+        // 锚定写法不合法（缺行号 / 行锚后不是数字 / 行列越界）：
+        // 吞掉随后的字母数字与 $，给出与旧词法一致的错误分类
+        let j = start + 1;
+        while (
+          j < input.length &&
+          (/[A-Za-z0-9]/.test(input[j]) || input[j] === '$')
+        ) {
+          j++;
+        }
+        const word = input
+          .slice(start, j)
+          .replace(/\$/g, '');
         throw new ParseError(
-          /^[A-Ta-t]/.test(text)
-            ? `引用 ${text.toUpperCase()} 超出 A1..T20 范围`
-            : `不允许的名称或函数 “${text}”（仅支持 A1..T20 引用，不支持函数）`,
+          /^[A-Ta-t]/.test(word)
+            ? `引用 ${word.toUpperCase()} 超出 A1..T20 范围（或锚定写法有误，行号须为 1..20）`
+            : `不允许的名称或函数 “${word}”（仅支持 A1..T20 引用，不支持函数）`,
           start,
         );
       }
-      tokens.push({ type: 'ref', text: addr, pos: start });
+      tokens.push({
+        type: 'ref',
+        text: normalizeRef(text)!,
+        pos: start,
+        absCol,
+        absRow,
+      });
       continue;
     }
     if (c === '+' || c === '-' || c === '*' || c === '/') {
@@ -168,7 +213,12 @@ class Parser {
     }
     if (t.type === 'ref') {
       this.pos++;
-      return { kind: 'ref', addr: t.text as Addr };
+      return {
+        kind: 'ref',
+        addr: t.text as Addr,
+        absCol: t.absCol ?? false,
+        absRow: t.absRow ?? false,
+      };
     }
     if (t.type === 'lparen') {
       this.pos++;
@@ -244,4 +294,59 @@ export function collectRefs(expr: Expr): Addr[] {
   };
   walk(expr);
   return out;
+}
+
+/* --------------------------- 复制时的引用转换 --------------------------- */
+
+/**
+ * 匹配公式体内的一个引用 token：($?)(列字母)($?)(行数字)。
+ * 行号分支 20 在 2 之前，并以 (?!\\d) 收尾，避免把 A20 截成 A2+0。
+ */
+const REF_TOKEN_RE = /(\$?)([A-Ta-t])(\$?)(20|1[0-9]|0?[1-9])(?!\d)/g;
+
+export interface TranslateResult {
+  ok: boolean;
+  /** 转换后的原文（ok 时有效；解析失败的源格原样返回） */
+  text: string;
+  /** 转换后越界的引用（含锚定写法），命中即由调用方整组拒绝 */
+  outOfRange: string[];
+}
+
+/**
+ * 把一格原始输入从源格复制到目标格时转换其中的引用。
+ *
+ * - 空 / 整数：原样返回。
+ * - 公式：相对行列按“源格 → 目标格”的偏移平移；$ 锚定的列或行保持不动。
+ *   输入本身必须先通过解析器（调用方对 #ERR! 源格走“复制原文”分支，不调用本函数）。
+ * - 任一转换后引用越出 A..T / 1..20：在 outOfRange 中列出，调用方须整组拒绝。
+ */
+export function translateCellInput(
+  raw: string,
+  dc: number,
+  dr: number,
+): TranslateResult {
+  if (raw.trim() === '' || !raw.startsWith('=')) {
+    return { ok: true, text: raw, outOfRange: [] };
+  }
+  const outOfRange: string[] = [];
+  const body = raw.slice(1);
+  const next = body.replace(
+    REF_TOKEN_RE,
+    (token, colMark: string, letter: string, rowMark: string, digits: string) => {
+      const colAbs = colMark === '$';
+      const rowAbs = rowMark === '$';
+      const col0 = letter.toUpperCase().charCodeAt(0) - 65;
+      const row0 = parseInt(digits, 10) - 1;
+      const nc = colAbs ? col0 : col0 + dc;
+      const nr = rowAbs ? row0 : row0 + dr;
+      if (nc < 0 || nc >= 20 || nr < 0 || nr >= 20) {
+        outOfRange.push(token.toUpperCase());
+        return token;
+      }
+      const L = String.fromCharCode(65 + nc);
+      const n = nr + 1;
+      return `${colMark}${L}${rowMark}${n}`;
+    },
+  );
+  return { ok: outOfRange.length === 0, text: '=' + next, outOfRange };
 }

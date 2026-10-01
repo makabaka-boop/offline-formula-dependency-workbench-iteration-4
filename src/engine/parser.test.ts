@@ -89,6 +89,47 @@ describe('解析器：引用与范围', () => {
   });
 });
 
+describe('解析器：$ 锚定引用（$A1 / A$1 / $A$1）', () => {
+  it('四种锚定写法解析出 absCol / absRow 标记', () => {
+    const cases: [string, boolean, boolean][] = [
+      ['A1', false, false],
+      ['$A1', true, false],
+      ['A$1', false, true],
+      ['$A$1', true, true],
+    ];
+    for (const [text, absCol, absRow] of cases) {
+      const ast = parseExpr(text);
+      expect(ast).toMatchObject({ kind: 'ref', addr: 'A1', absCol, absRow });
+    }
+  });
+
+  it('锚定不影响求值：=$A$1+A$1+$A1 与 =A1+A1+A1 同值', () => {
+    // 通过端到端引擎求值更直观，这里仅确认 AST 引用地址都归一到 A1
+    const ast = parseExpr('$A$1+A$1+$A1');
+    expect(collectRefs(ast)).toEqual(['A1']);
+  });
+
+  it('锚标记保留在引用 token 内：$ 不被当作非法字符', () => {
+    expect(() => parseExpr('$T20*2')).not.toThrow();
+    expect(() => parseExpr('T$20/2')).not.toThrow();
+    expect(() => parseExpr('a$1+b$2')).not.toThrow();
+  });
+
+  it('锚定行号仍受 1..20 限制', () => {
+    expect(() => parseExpr('$A21')).toThrow(/A1..T20/);
+    expect(() => parseExpr('A$0')).toThrow();
+    expect(() => parseExpr('$U1')).toThrow();
+  });
+
+  it('残缺锚定写法报错（列锚后须跟列字母、行锚后须跟行号）', () => {
+    expect(() => parseExpr('$1')).toThrow(/列锚/);
+    expect(() => parseExpr('$')).toThrow(/列锚/);
+    expect(() => parseExpr('$A')).toThrow();
+    expect(() => parseExpr('A$')).toThrow();
+    expect(() => parseExpr('A$$1')).toThrow();
+  });
+});
+
 describe('解析器：拒绝函数、范围和非法字符', () => {
   it('SUM 函数被拒绝', () => {
     expect(() => parseExpr('SUM(A1:A3)')).toThrow();

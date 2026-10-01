@@ -549,3 +549,133 @@ tr.hyp-row-divzero {
   background: #fffafa;
 }
 
+/* ------------------------------ 矩形复制工作区 ------------------------------ */
+
+.copy-panel {
+  border-bottom-color: #16a34a;
+}
+
+.copy-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.copy-form label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.copy-input {
+  width: 72px !important;
+}
+.copy-dim-input {
+  width: 42px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.copy-x,
+.copy-arrow {
+  color: var(--muted);
+  font-weight: 700;
+}
+.copy-arrow {
+  color: #16a34a;
+}
+
+.copy-results {
+  margin-top: 4px;
+}
+.copy-preview-head,
+.copy-diff-head {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  margin: 6px 0 4px;
+}
+.copy-grid-scroll {
+  overflow: auto;
+  max-width: 100%;
+}
+table.copy-grid {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.copy-grid th,
+.copy-grid td {
+  border: 1px solid var(--border);
+  padding: 0;
+  vertical-align: top;
+}
+.copy-grid th {
+  background: #f8fafc;
+  color: var(--muted);
+  padding: 2px 10px;
+  font-weight: 600;
+}
+.copy-corner {
+  border: none !important;
+  background: transparent !important;
+}
+.copy-rowhead {
+  background: #f8fafc !important;
+  color: var(--muted);
+  text-align: center;
+  padding: 2px 6px !important;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.copy-cell {
+  min-width: 150px;
+  background: #fff;
+  cursor: pointer;
+}
+.copy-cell:hover {
+  background: #f5f8ff;
+}
+.copy-cell-cycle {
+  background: var(--cycle-bg);
+}
+.copy-cell-err {
+  background: var(--err-bg);
+}
+.copy-cell-down {
+  background: #fef2f2;
+}
+.copy-addr {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-weight: 700;
+  padding: 2px 5px 0;
+  color: var(--muted);
+}
+.copy-raw {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.copy-out {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  padding: 0 5px 3px;
+  font-weight: 600;
+}
+.copy-graph-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  margin: 2px 0 4px;
+}
+.copy-graph-new {
+  color: var(--err);
+  font-weight: 600;
+}
+.copy-graph-gone {
+  color: var(--ok);
+  font-weight: 600;
+}
+
